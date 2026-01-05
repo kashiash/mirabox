@@ -1,0 +1,1 @@
+zamknij biezacy proces i uruchom ponownie

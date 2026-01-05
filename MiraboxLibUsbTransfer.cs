@@ -86,26 +86,101 @@ public class MiraboxLibUsbTransfer : IDisposable
                 Console.WriteLine("\n✓ Skonfigurowano urządzenie (config 1, interface 0)");
             }
 
-            // Znajdź endpointy - spróbuj różne
+            // Znajdź endpointy - użyj informacji z diagnostyki
             UsbEndpointWriter? outEndpoint = null;
             UsbEndpointReader? inEndpoint = null;
             
-            // Spróbuj endpoint 0x01
-            outEndpoint = _usbDevice.OpenEndpointWriter(WriteEndpointID.Ep01);
-            inEndpoint = _usbDevice.OpenEndpointReader(ReadEndpointID.Ep01);
+            // Znajdź endpointy z listy dostępnych
+            foreach (var config in _usbDevice.Configs)
+            {
+                foreach (var iface in config.InterfaceInfoList)
+                {
+                    foreach (var ep in iface.EndpointInfoList)
+                    {
+                        var epId = ep.Descriptor.EndpointID;
+                        var isIn = (epId & 0x80) != 0; // Bit 7 = 1 oznacza IN
+                        var epNum = epId & 0x0F; // Dolne 4 bity to numer endpointu
+                        
+                        Console.WriteLine($"  Sprawdzam endpoint 0x{epId:X2} (IN={isIn}, num={epNum})...");
+                        
+                        if (isIn && epId == 0x82)
+                        {
+                            // Endpoint 0x82 (IN) - to jest endpoint do odczytu
+                            try
+                            {
+                                // W LibUsbDotNet, endpoint 0x82 = ReadEndpointID.Ep02
+                                // (bo 0x82 = 130, a Ep02 = 2, ale bit 7 jest ustawiony dla IN)
+                                inEndpoint = _usbDevice.OpenEndpointReader(ReadEndpointID.Ep02);
+                                Console.WriteLine($"    ✓ Otwarto IN endpoint 0x{epId:X2} (ReadEndpointID.Ep02)");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"    ✗ Błąd otwierania IN endpoint 0x{epId:X2}: {ex.Message}");
+                            }
+                        }
+                        else if (!isIn && epId == 0x01)
+                        {
+                            // Endpoint 0x01 (OUT) - to jest endpoint do zapisu
+                            try
+                            {
+                                outEndpoint = _usbDevice.OpenEndpointWriter(WriteEndpointID.Ep01);
+                                Console.WriteLine($"    ✓ Otwarto OUT endpoint 0x{epId:X2} (WriteEndpointID.Ep01)");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"    ✗ Błąd otwierania OUT endpoint 0x{epId:X2}: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+            }
             
+            // Jeśli nie znaleziono przez pętlę, spróbuj standardowe metody
             if (outEndpoint == null)
             {
-                // Spróbuj endpoint 0x02
-                Console.WriteLine("Endpoint 0x01 niedostępny, próbuję 0x02...");
-                outEndpoint = _usbDevice.OpenEndpointWriter(WriteEndpointID.Ep02);
-                inEndpoint = _usbDevice.OpenEndpointReader(ReadEndpointID.Ep02);
+                try
+                {
+                    outEndpoint = _usbDevice.OpenEndpointWriter(WriteEndpointID.Ep01);
+                    Console.WriteLine("✓ Otwarto OUT endpoint przez WriteEndpointID.Ep01");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"✗ Nie można otworzyć OUT endpoint: {ex.Message}");
+                }
+            }
+            
+            if (inEndpoint == null)
+            {
+                try
+                {
+                    inEndpoint = _usbDevice.OpenEndpointReader(ReadEndpointID.Ep02);
+                    Console.WriteLine("✓ Otwarto IN endpoint przez ReadEndpointID.Ep02");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠ Nie można otworzyć IN endpoint przez Ep02: {ex.Message}");
+                    try
+                    {
+                        inEndpoint = _usbDevice.OpenEndpointReader(ReadEndpointID.Ep01);
+                        Console.WriteLine("✓ Otwarto IN endpoint przez ReadEndpointID.Ep01");
+                    }
+                    catch (Exception ex2)
+                    {
+                        Console.WriteLine($"✗ Nie można otworzyć IN endpoint: {ex2.Message}");
+                    }
+                }
             }
 
             if (outEndpoint == null)
             {
-                Console.WriteLine("✗ Nie znaleziono OUT endpoint");
+                Console.WriteLine("✗ Nie znaleziono OUT endpoint - programowanie przycisków nie będzie działać");
                 return false;
+            }
+            
+            if (inEndpoint == null)
+            {
+                Console.WriteLine("⚠ Nie znaleziono IN endpoint - odczyt przycisków nie będzie działał");
+                Console.WriteLine("   Programowanie przycisków będzie działać, ale odczyt nie");
             }
 
             _writer = outEndpoint;
@@ -113,7 +188,13 @@ public class MiraboxLibUsbTransfer : IDisposable
 
             var outEpId = _writer?.EndpointInfo?.Descriptor.EndpointID ?? 0;
             var inEpId = _reader?.EndpointInfo?.Descriptor.EndpointID ?? 0;
-            Console.WriteLine($"✓ Otwarto endpointy (OUT: 0x{outEpId:X2}, IN: 0x{inEpId:X2})");
+            Console.WriteLine($"\n✓ Otwarto endpointy (OUT: 0x{outEpId:X2}, IN: 0x{inEpId:X2})");
+            
+            if (inEpId == 0)
+            {
+                Console.WriteLine("⚠ UWAGA: Endpoint IN (odczyt) nie został otwarty - odczyt przycisków nie będzie działał");
+            }
+            
             return true;
         }
         catch (Exception ex)
@@ -172,9 +253,14 @@ public class MiraboxLibUsbTransfer : IDisposable
     /// </summary>
     public byte[]? ReadData(int bufferSize = 512, int timeout = 1000)
     {
-        if (!IsConnected || _reader == null)
+        if (!IsConnected)
         {
-            Console.WriteLine("✗ Urządzenie USB nie jest połączone");
+            return null;
+        }
+        
+        if (_reader == null)
+        {
+            // Endpoint IN nie został otwarty - nie można odczytać
             return null;
         }
 
@@ -185,9 +271,11 @@ public class MiraboxLibUsbTransfer : IDisposable
 
             if (ec != ErrorCode.None)
             {
-                if (ec != ErrorCode.IoTimedOut)
+                // Nie wyświetlaj błędów timeout i Win32Error - to normalne gdy nie ma danych
+                if (ec != ErrorCode.IoTimedOut && ec != ErrorCode.Win32Error)
                 {
-                    Console.WriteLine($"✗ Błąd LibUSB Read: {ec}");
+                    // Wyświetlaj tylko inne błędy (tylko raz na 1000 prób, żeby nie spamować)
+                    // Console.WriteLine($"✗ Błąd LibUSB Read: {ec}");
                 }
                 return null;
             }
@@ -203,7 +291,11 @@ public class MiraboxLibUsbTransfer : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"✗ Błąd podczas odczytu danych LibUSB: {ex.Message}");
+            // Nie wyświetlaj błędów timeout
+            if (!ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            {
+                // Console.WriteLine($"✗ Błąd podczas odczytu danych LibUSB: {ex.Message}");
+            }
             return null;
         }
     }

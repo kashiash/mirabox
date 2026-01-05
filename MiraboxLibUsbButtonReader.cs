@@ -57,64 +57,121 @@ public class MiraboxLibUsbButtonReader : MiraboxButtonReader, IMiraboxReader
     
     /// <summary>
     /// Odczytuje naciśnięcie przycisku z urządzenia
+    /// 
+    /// Format danych z urządzenia (64 bajty):
+    /// Przykład: 41-43-4B-00-00-4F-4B-00-00-0D-00-00-00-00-00-00...
+    /// 
+    /// Bajt 0-2:  41-43-4B = "ACK" (ASCII) - potwierdzenie odbioru
+    /// Bajt 3-4:  00-00    = Padding/Rezerwa
+    /// Bajt 5-6:  4F-4B    = "OK" (ASCII) - status OK
+    /// Bajt 7-8:  00-00    = Padding/Rezerwa
+    /// Bajt 9:    0D       = Numer przycisku (1-15, tutaj 13)
+    /// Bajt 10:   00       = Stan przycisku (0=released, 1=pressed)
+    /// Bajt 11+:  00...    = Padding do 64 bajtów (reszta wypełniona zerami)
+    /// 
+    /// Struktura:
+    /// [ACK (3 bajty)] [Padding (2 bajty)] [OK (2 bajty)] [Padding (2 bajty)] [Button (1 bajt)] [State (1 bajt)] [Padding (53 bajty)]
     /// </summary>
     public ButtonPress? ReadButtonPress()
     {
-        var data = _usbTransfer.ReadData(bufferSize: 512, timeout: 100);
+        var data = _usbTransfer.ReadData(bufferSize: 64, timeout: 10);
         
-        if (data == null || data.Length < 11)
+        if (data == null || data.Length == 0)
         {
             return null;
         }
         
-        // Format zgodny z Node.js - sprawdź różne możliwe formaty
-        // W zależności od urządzenia, dane mogą być w różnych miejscach
+        // Sprawdź czy to puste dane (same zera)
+        bool allZeros = true;
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (data[i] != 0)
+            {
+                allZeros = false;
+                break;
+            }
+        }
+        if (allZeros)
+        {
+            return null; // Puste dane - ignoruj
+        }
+        
         int buttonNumber = 0;
         int state = 0;
         
-        // Próba 1: Standardowy format (bajty 9-10)
-        if (data.Length >= 11)
+        // Format 1: ACK (0x41 0x43 0x4B) + OK (0x4F 0x4B) + numer przycisku (bajt 9) + stan (bajt 10)
+        // Przykład: 41-43-4B-00-00-4F-4B-00-00-0D-00-00-00-00-00-00
+        if (data.Length >= 11 && 
+            data[0] == 0x41 && data[1] == 0x43 && data[2] == 0x4B && // ACK
+            data[5] == 0x4F && data[6] == 0x4B) // OK
         {
             buttonNumber = data[9];
             state = data[10];
         }
-        
-        // Próba 2: Jeśli buttonNumber jest 0, spróbuj innych pozycji
-        if (buttonNumber == 0 && data.Length >= 3)
+        // Format 2: Standardowy format (bajty 9-10) - zgodnie z Node.js
+        else if (data.Length >= 11)
         {
-            // Może być w pierwszych bajtach
-            buttonNumber = data[1];
-            state = data[2];
+            buttonNumber = data[9];
+            state = data[10];
+        }
+        // Format 3: Prosty format - numer przycisku w bajcie 0, stan w bajcie 1
+        else if (data.Length >= 2)
+        {
+            buttonNumber = data[0];
+            state = data[1];
         }
         
-        // Próba 3: Sprawdź czy któryś bajt zawiera numer przycisku (1-15)
-        if (buttonNumber == 0 || buttonNumber > 15)
+        // Sprawdź czy znaleziono poprawny numer przycisku
+        if (buttonNumber >= 1 && buttonNumber <= 15)
         {
-            for (int i = 0; i < Math.Min(data.Length, 64); i++)
+            // Określ stan - sprawdź różne możliwe wartości
+            string buttonState;
+            
+            // Sprawdź czy to format ACK+OK - wtedy stan może być w innym miejscu
+            bool isAckOkFormat = data.Length >= 11 && 
+                                 data[0] == 0x41 && data[1] == 0x43 && data[2] == 0x4B && // ACK
+                                 data[5] == 0x4F && data[6] == 0x4B; // OK
+            
+            if (isAckOkFormat)
             {
-                if (data[i] >= 1 && data[i] <= 15)
+                // W formacie ACK+OK, stan jest w bajcie 10
+                // 0x00 = released, 0x01 lub inna wartość = pressed
+                if (state == 0 || state == 0x00)
                 {
-                    buttonNumber = data[i];
-                    // Następny bajt może być stanem
-                    if (i + 1 < data.Length)
-                    {
-                        state = data[i + 1];
-                    }
-                    break;
+                    buttonState = "released";
+                }
+                else
+                {
+                    // Wszystkie inne wartości = pressed
+                    buttonState = "pressed";
                 }
             }
+            else
+            {
+                // Standardowy format
+                if (state == 1 || state == 0xFF || state == 0x01)
+                {
+                    buttonState = "pressed";
+                }
+                else if (state == 0 || state == 0x00)
+                {
+                    buttonState = "released";
+                }
+                else
+                {
+                    // Jeśli state ma inną wartość, traktuj jako pressed jeśli nie jest 0
+                    buttonState = state != 0 ? "pressed" : "released";
+                }
+            }
+            
+            return new ButtonPress
+            {
+                ButtonNumber = buttonNumber,
+                State = buttonState
+            };
         }
         
-        if (buttonNumber == 0 || buttonNumber > 15)
-        {
-            return null; // Nieprawidłowy numer przycisku
-        }
-        
-        return new ButtonPress
-        {
-            ButtonNumber = buttonNumber,
-            State = state == 1 || state == 0xFF ? "pressed" : "released"
-        };
+        return null; // Nie znaleziono poprawnego numeru przycisku
     }
     
     // Implementacja interfejsu IMiraboxReader
