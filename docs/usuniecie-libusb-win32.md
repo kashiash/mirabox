@@ -130,3 +130,4 @@ Jeśli chcesz wrócić do libusb-win32:
 
 **UWAGA:** Po instalacji libusb-win32, HID przestanie działać!
 
+

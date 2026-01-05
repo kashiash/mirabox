@@ -153,3 +153,4 @@ Twój kod jest **poprawny** i **gotowy do użycia**. Umożliwia:
 
 Jedynym wymaganiem jest, aby urządzenie było widoczne jako HID w systemie Windows (co jest standardem dla większości urządzeń USB HID).
 
+

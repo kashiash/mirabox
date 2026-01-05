@@ -90,3 +90,4 @@ Parser w `MiraboxLibUsbButtonReader.cs` odczytuje:
 
 Bajty 0-8 (ACK, OK, padding) są używane tylko do weryfikacji poprawności pakietu.
 
+
