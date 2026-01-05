@@ -7,9 +7,9 @@ namespace mirabox;
 
 public class MiraboxButtonProgrammer
 {
-    private readonly MiraboxButtonReader _reader;
+    private readonly IMiraboxReader _reader;
 
-    public MiraboxButtonProgrammer(MiraboxButtonReader reader)
+    public MiraboxButtonProgrammer(IMiraboxReader reader)
     {
         _reader = reader ?? throw new ArgumentNullException(nameof(reader));
     }

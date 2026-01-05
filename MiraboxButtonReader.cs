@@ -7,7 +7,7 @@ using System.Text;
 
 namespace mirabox;
 
-public class MiraboxButtonReader : IDisposable
+public class MiraboxButtonReader : IDisposable, IMiraboxReader
 {
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     private static extern SafeFileHandle CreateFile(
